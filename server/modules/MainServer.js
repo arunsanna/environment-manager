@@ -89,6 +89,11 @@ module.exports = function MainServer() {
         res.send(APP_VERSION);
       });
 
+      // Redirect deployment history requests to v1 API.
+      app.get('/api/:account/deployments/history/:deploymentId', (req, res) => {
+        res.redirect(301, `/api/v1/deployments/${req.params.deploymentId}`);
+      });
+
       if (config.get('IS_PRODUCTION') === true) {
         app.use(expressWinston.errorLogger({ winstonInstance: logger }));
       }
