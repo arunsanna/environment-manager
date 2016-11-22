@@ -5,6 +5,7 @@ let _ = require('lodash');
 let config = require('config');
 let co = require('co');
 let Environment = require('models/Environment');
+let logger = require('modules/logger');
 
 function getUpstream(accountName, upstreamName) {
   let sender = require('modules/sender');
@@ -65,9 +66,11 @@ exports.getRules = (request) => {
   let accountName = request.params.account;
 
   return co(function* () {
-    let body = request.params.body;
-    let environmentName = body.EnvironmentName || body.Value.EnvironmentName;
-
+    let body = request.params.body || request.body;
+    logger.debug(`Upstreams authorizer`, { body, url: request.url });
+    // TODO(Filip): remove this hack after we move all upstreams data into one account
+    let environmentName = upstreamName.substr(1, 3);
+    
     if (accountName === undefined) {
       accountName = yield Environment.getAccountNameForEnvironment(environmentName);
     }

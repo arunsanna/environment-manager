@@ -1,4 +1,4 @@
-﻿/* Copyright (c) Trainline Limited, 2016. All rights reserved. See LICENSE.txt in the project root for license information. */
+/* Copyright (c) Trainline Limited, 2016. All rights reserved. See LICENSE.txt in the project root for license information. */
 'use strict';
 
 angular.module('EnvironmentManager.operations').controller('OpsUpstreamController',
@@ -63,8 +63,10 @@ angular.module('EnvironmentManager.operations').controller('OpsUpstreamControlle
       var params = { account: 'all' };
       resources.config.lbUpstream.all(params).then(function (data) {
         vm.fullUpstreamData = restructureUpstreams(data);
-        vm.dataFound = true;
-        vm.updateFilter();
+        return updateLBStatus().then(function(){
+          vm.updateFilter();
+          vm.dataFound = true;
+        });
       }).finally(function () {
         vm.dataLoading = false;
       });
@@ -105,7 +107,7 @@ angular.module('EnvironmentManager.operations').controller('OpsUpstreamControlle
         return match;
       });
 
-      updateLBStatus();
+      
     };
 
     vm.showInstanceDetails = function (upstreamData) {
@@ -197,32 +199,30 @@ angular.module('EnvironmentManager.operations').controller('OpsUpstreamControlle
     }
 
     function getSlice(port, service) {
-      if (_.get(service, 'Value.BluePort') === port) return 'Blue';
-      if (_.get(service, 'Value.GreenPort') === port) return 'Green';
+      if (_.toInteger(_.get(service, 'Value.BluePort')) === port) return 'Blue';
+      if (_.toInteger(_.get(service, 'Value.GreenPort')) === port) return 'Green';
       return 'Unknown';
     }
 
     function updateLBStatus() {
 
       // Read LBs for this environment
-      accountMappingService.getEnvironmentLoadBalancers(vm.selectedEnvironment).then(function (lbs) {
+      return accountMappingService.getEnvironmentLoadBalancers(vm.selectedEnvironment).then(function (lbs) {
 
         // Clear existing data
-        vm.data.forEach(function (upstreamHost) {
-          upstreamHost.Value.LoadBalancerState = {
-            LBs: []
-          };
+        vm.fullUpstreamData.forEach(function (upstreamHost) {
+          upstreamHost.Value.LoadBalancerState.LBs = [];
         });
 
         // Loop LBs and read LB status data
-        lbs.forEach(function (lb) {
+        var promises = lbs.map(function (lb) {
 
-          resources.nginx.all({ instance: lb }).then(function success(nginxData) {
+          return resources.nginx.all({ instance: lb }).then(function success(nginxData) {
 
             var lbName = lb.split('.')[0]; // Drop .prod/nonprod.local from name
 
             // Loop upstream hosts and associate LB status with each record
-            vm.data.forEach(function (upstreamHost) {
+            vm.fullUpstreamData.forEach(function (upstreamHost) {
 
               var lbServerStatusData = getLBStatusForUpstream(upstreamHost.Value.UpstreamName, upstreamHost.Value.Port, nginxData);
               var lbData = { Name: lbName, State: getActualUpstreamState(lbServerStatusData), ServerStatus: lbServerStatusData };
@@ -244,7 +244,7 @@ angular.module('EnvironmentManager.operations').controller('OpsUpstreamControlle
           });
 
         });
-
+        return $q.all(promises);
       });
     }
 
@@ -276,11 +276,11 @@ angular.module('EnvironmentManager.operations').controller('OpsUpstreamControlle
 
       if (lbServerStatusData && lbServerStatusData.length > 0) {
         lbServerStatusData.forEach(function (server) {
-          if (server.state == 'up') { upCount++; }
-
-          if (server.state == 'down') { downCount++; }
-
-          if (server.state == 'unhealthy') { unhealthyCount++; }
+          if (server) {
+            if (server.state == 'up') { upCount++; }
+            if (server.state == 'down') { downCount++; }
+            if (server.state == 'unhealthy') { unhealthyCount++; }
+          }
         });
 
         if (upCount == lbServerStatusData.length) {

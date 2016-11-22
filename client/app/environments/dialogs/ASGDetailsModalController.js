@@ -25,9 +25,16 @@ angular.module('EnvironmentManager.environments').controller('ASGDetailsModalCon
       MaxSize: 0,
       ConfiguredAmiType: '',
       ConfiguredAmiVersion: '',
+      AvailabilityZone: '',
       NewAmi: null,
       NewSchedule: null,
     };
+    vm.deploymentAzsList = [
+      { Name: 'Span all active AZs (recommended)', Value: '' },
+      { Name: 'AZ A Only', Value: 'A' },
+      { Name: 'AZ B Only', Value: 'B' },
+      { Name: 'AZ C Only', Value: 'C' }
+    ];
 
     vm.scheduleModes = [{
       type: 'schedule',
@@ -54,7 +61,16 @@ angular.module('EnvironmentManager.environments').controller('ASGDetailsModalCon
       vm.asgUpdate.MaxSize = vm.asg.MaxSize;
       vm.asgUpdate.NewSchedule = vm.asg.Schedule;
       vm.asgUpdate.ScalingSchedule = vm.asg.ScalingSchedule;
+      vm.asgUpdate.AvailabilityZone = deriveAvailabilityZoneFriendlyName(vm.asg.AvailabilityZones);
       vm.selectedScheduleMode = vm.asg.ScalingSchedule && vm.asg.ScalingSchedule.length ? 'scaling' : 'schedule';
+    }
+
+    function deriveAvailabilityZoneFriendlyName(azs) {
+      if (azs.length > 1)
+        return '';
+      
+      if (azs.length === 1)
+        return azs[0].substring(azs[0].length - 1).toUpperCase();
     }
 
     vm.openServerRoleConfig = function () {
@@ -192,24 +208,59 @@ angular.module('EnvironmentManager.environments').controller('ASGDetailsModalCon
       updated.SecurityGroups = vm.target.ASG.LaunchConfig.UI_SecurityGroupsFlatList.split(',').map(_.trim);
       delete updated.UI_SecurityGroupsFlatList;
       vm.asg.updateLaunchConfig(updated).then(function() {
-        showLaunchConfigConfirmation();
-        vm.refresh();
+        showLaunchConfigConfirmation().then(vm.refresh);
       }, function (error) {
         $rootScope.$broadcast('error', error);
       });
     };
+
+    vm.updateAutoScalingGroup = function () {
+      confirmAZChange().then(function() {
+          var updated = {
+            size: {
+              min: vm.asgUpdate.MinSize,
+              desired: vm.asgUpdate.DesiredCapacity,
+              max: vm.asgUpdate.MaxSize
+            },
+            network: {
+              availabilityZoneName: vm.asgUpdate.AvailabilityZone
+            }
+          };
+          vm.asg.updateAutoScalingGroup(updated).then(function() {
+            modal.information({
+              title: 'ASG Updated',
+              message: 'ASG update successful. You can monitor instance changes by using the Refresh Icon in the top right of the window.<br/><br/><b>Note:</b> During scale-down instances will wait in a Terminating state for 10 minutes to allow for connection draining before termination.',
+            }).then(function () {
+              vm.refresh();
+            });
+          }, function (error) {
+            $rootScope.$broadcast('error', error);
+          });
+      });
+    };
+
+    function confirmAZChange() {
+      var originalAvailabilityZone = deriveAvailabilityZoneFriendlyName(vm.asg.AvailabilityZones);
+      if (originalAvailabilityZone === vm.asgUpdate.AvailabilityZone) {
+        return Promise.resolve(true);
+      }
+      
+      return modal.confirmation({
+        title: 'Change Availability Zones',
+        message: 'Are you sure you want to change the AZ settings? AWS will instantly rebalance your instances according to these settings.',
+        severity: 'Danger'
+      });
+    }
 
     vm.resize = function () {
       var min = vm.asgUpdate.MinSize;
       var desired = vm.asgUpdate.DesiredCapacity;
       var max = vm.asgUpdate.MaxSize;
 
-      AutoScalingGroup.resize(vm.environmentName, vm.asg.AsgName, { min: min, desired: desired, max: max }).then(function () {
-        modal.information({
+      return AutoScalingGroup.resize(vm.environmentName, vm.asg.AsgName, { min: min, desired: desired, max: max }).then(function () {
+        return modal.information({
           title: 'ASG Resized',
-          message: 'ASG resize successful. You can monitor instance changes by using the Refresh Icon in the top right of the window.<br/><br/><b>Note:</b> During scale-down instances will wait in a Terminating state for 10 minutes to allow for connection draining before termination.',
-        }).then(function () {
-          vm.refresh();
+          message: 'ASG resize successful. You can monitor instance changes by using the Refresh Icon in the top right of the instances window.<br/><br/><b>Note:</b> During scale-down instances will wait in a Terminating state for 10 minutes to allow for connection draining before termination.',
         });
       });
     };
@@ -219,9 +270,21 @@ angular.module('EnvironmentManager.environments').controller('ASGDetailsModalCon
     };
 
     function showLaunchConfigConfirmation() {
-      modal.information({
-        title: 'ASG Launch Configuration Updated',
-        message: 'Launch Configuration updated successfully.<br/><br/><b>PLEASE NOTE:</b> This change does not affect any existing instances. To rollout the change to existing instances:<ul><li>Resize the ASG to double its current size</li><li>Wait for the new instances to be brought into service</li><li>Resize the ASG to its original size again. This will remove older instances first leaving only those with the latest settings',
+      var instance = $uibModal.open({
+        templateUrl: '/app/environments/dialogs/asg/launchConfigConfirmation.html',
+        controller: 'LaunchConfigConfirmationController as vm',
+        resolve: {
+          parameters: function () { return { asg: vm.asg }; },
+        },
+      });
+      return instance.result.then(function(result){
+        if (result.doScalingRefresh) {
+          vm.asgUpdate.DesiredCapacity = result.numInstancesForRefresh;
+          if (vm.asgUpdate.MaxSize < result.numInstancesForRefresh) {
+            vm.asgUpdate.MaxSize = result.numInstancesForRefresh
+          }
+          return vm.resize();
+        }
       });
     }
     
